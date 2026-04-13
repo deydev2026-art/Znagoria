@@ -9,12 +9,12 @@ from flask import Flask, request, jsonify, Response
 app = Flask(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
-STORAGE_DIR = BASE_DIR / "storage"
+STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(BASE_DIR / "storage")))
 STATE_FILE = STORAGE_DIR / "state.json"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_KEYS = {"Molecule", "Feedback"}
-TOKEN = "CHANGE_ME"
+TOKEN = os.environ.get("TOKEN", "CHANGE_ME")
 
 
 def normalize_key(raw: str | None) -> str | None:
@@ -82,7 +82,7 @@ def home():
 <body>
   <h1>GET Gateway</h1>
   <div class="row">
-    <label>Token: <input id="token" value="CHANGE_ME"></label>
+    <label>Token: <input id="token" value="TOKEN"></label>
     <label>Key:
       <select id="key">
         <option>Molecule</option>
@@ -228,4 +228,4 @@ def reset():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
