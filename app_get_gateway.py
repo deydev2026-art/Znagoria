@@ -304,7 +304,7 @@ def home():
                 const statusResp = await fetch('/status?token=' + encodeURIComponent(token), {{ cache: 'no-store' }});
                 const statusText = await statusResp.text();
 
-                outEl.textContent = text + "\n\nPOST_ACTION_STATUS:\n" + statusText;
+                outEl.textContent = `${{text}}\n\nPOST_ACTION_STATUS:\n${{statusText}}`;
             }}
         </script>
     </body>
