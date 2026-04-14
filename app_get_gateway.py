@@ -215,6 +215,8 @@ def can_seal_feedback(state: dict[str, Any]) -> tuple[bool, str | None]:
 def can_reset_molecule(state: dict[str, Any], force: bool) -> tuple[bool, str | None]:
     if force:
         return True, None
+    if not state["Molecule"]["exists"]:
+        return True, None
     if state["Feedback"]["sealed"]:
         return True, None
     return False, "Molecule can be reset only after Feedback is sealed, or with force=1"
@@ -222,6 +224,9 @@ def can_reset_molecule(state: dict[str, Any], force: bool) -> tuple[bool, str | 
 
 def can_reset_feedback(state: dict[str, Any], force: bool) -> tuple[bool, str | None]:
     if force:
+        return True, None
+
+    if not state["Feedback"]["exists"]:
         return True, None
 
     fb = state["Feedback"]
@@ -275,14 +280,31 @@ def home():
             async function go(action, force=false) {{
                 const token = document.getElementById('token').value;
                 const key = document.getElementById('key').value;
-                const body = document.getElementById('body').value;
+                const bodyEl = document.getElementById('body');
+                const outEl = document.getElementById('out');
+                const body = bodyEl.value;
+
                 const params = new URLSearchParams({{ token }});
                 if (action !== 'status') params.set('key', key);
                 if (action === 'push') params.set('body', body);
                 if (force) params.set('force', '1');
+
                 const resp = await fetch('/' + action + '?' + params.toString(), {{ cache: 'no-store' }});
                 const text = await resp.text();
-                document.getElementById('out').textContent = text;
+
+                if (action === 'pull' || action === 'status') {{
+                    outEl.textContent = text;
+                    return;
+                }}
+
+                if (action === 'reset' && resp.ok) {{
+                    bodyEl.value = '';
+                }}
+
+                const statusResp = await fetch('/status?token=' + encodeURIComponent(token), {{ cache: 'no-store' }});
+                const statusText = await statusResp.text();
+
+                outEl.textContent = text + "\n\nPOST_ACTION_STATUS:\n" + statusText;
             }}
         </script>
     </body>
