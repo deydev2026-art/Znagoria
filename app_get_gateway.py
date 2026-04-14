@@ -223,13 +223,19 @@ def can_reset_molecule(state: dict[str, Any], force: bool) -> tuple[bool, str | 
 def can_reset_feedback(state: dict[str, Any], force: bool) -> tuple[bool, str | None]:
     if force:
         return True, None
+
     fb = state["Feedback"]
     mol = state["Molecule"]
-    if fb["sealed"] and fb["read_count"] > 0:
+
+    # Feedback reset should not depend on pull/read side effects.
+    # If Feedback is sealed, explicit reset is allowed.
+    if fb["sealed"]:
         return True, None
+
     if mol["sealed"] and is_stop_payload(current_text("Molecule")):
         return True, None
-    return False, "Feedback can be reset only after it was pulled, or with force=1"
+
+    return False, "Feedback can be reset only after it is sealed, or with force=1"
 
 
 @app.get("/")
@@ -299,6 +305,9 @@ def status():
             "phase": compute_phase(state),
             "Molecule": state["Molecule"],
             "Feedback": state["Feedback"],
+            "host": os.uname().nodename,
+            "pid": os.getpid(),
+            "storage_dir": str(STORAGE_DIR),
         }, no_store=True)
 
 
@@ -337,9 +346,23 @@ def seal():
     if err:
         return err
     with locked_state() as state:
+        # Idempotent seal: repeated GET should not break the flow.
+        if state[key]["sealed"]:
+            sync_channel_state(state, key)
+            return response_json({
+                "ok": True,
+                "action": "seal",
+                "key": key,
+                "sealed": True,
+                "already_sealed": True,
+                "size": state[key]["size"],
+                "sha256": state[key]["sha256"],
+            }, no_store=True)
+
         ok, why = can_seal_molecule(state) if key == "Molecule" else can_seal_feedback(state)
         if not ok:
             return response_json({"ok": False, "action": "seal", "key": key, "error": why}, status=409, no_store=True)
+
         state[key]["sealed"] = True
         sync_channel_state(state, key)
         return response_json({
@@ -363,9 +386,9 @@ def pull():
     with locked_state() as state:
         if not state[key]["sealed"]:
             return response_json({"ok": False, "action": "pull", "key": key, "error": f"{key} is not sealed"}, status=409, no_store=True)
-        state[key]["read_count"] = int(state[key].get("read_count", 0)) + 1
+        # pull must stay read-only; no read_count increment here
         text = current_text(key)
-        resp = Response(text, mimetype="text/plain; charset=utf-8")
+        resp = Response(text, content_type="text/plain; charset=utf-8")
         for k, v in no_store_headers().items():
             resp.headers[k] = v
         return resp
