@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV PORT=8000
-CMD ["sh", "-c", "python app_get_gateway.py"]
+CMD ["python app_get_gateway.py"]
