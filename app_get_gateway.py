@@ -117,15 +117,65 @@ def locked_state():
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
+def request_json() -> dict[str, Any]:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def get_param(name: str, default: Any = "") -> Any:
+    if name in request.args:
+        return request.args.get(name, default)
+    if name in request.form:
+        return request.form.get(name, default)
+    payload = request_json()
+    if name in payload:
+        return payload.get(name, default)
+    return default
+
+
+def get_token() -> str:
+    token = get_param("token", "")
+    if token:
+        return str(token)
+
+    header_token = request.headers.get("X-Token", "").strip()
+    if header_token:
+        return header_token
+
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+
+    return ""
+
+
+def get_key() -> str:
+    return str(get_param("key", ""))
+
+
+def get_body() -> str:
+    body = get_param("body", "")
+    if body is None:
+        return ""
+    return str(body)
+
+
+def get_force_flag() -> bool:
+    raw = get_param("force", "0")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def require_token() -> Response | None:
-    token = request.args.get("token", "")
+    token = get_token()
     if token != TOKEN:
         return jsonify({"ok": False, "error": "unauthorized"}), 403
     return None
 
 
 def require_key() -> tuple[str | None, Response | None]:
-    key = request.args.get("key", "")
+    key = get_key()
     if key not in ALLOWED_KEYS:
         return None, (jsonify({"ok": False, "error": "invalid key"}), 400)
     return key, None
@@ -232,8 +282,6 @@ def can_reset_feedback(state: dict[str, Any], force: bool) -> tuple[bool, str | 
     fb = state["Feedback"]
     mol = state["Molecule"]
 
-    # Feedback reset should not depend on pull/read side effects.
-    # If Feedback is sealed, explicit reset is allowed.
     if fb["sealed"]:
         return True, None
 
@@ -245,23 +293,26 @@ def can_reset_feedback(state: dict[str, Any], force: bool) -> tuple[bool, str | 
 
 @app.get("/")
 def home():
-    html = f"""
+    html = """
     <!doctype html>
     <html>
     <head>
         <meta charset="utf-8">
-        <title>Znagoria GET Gateway v2</title>
+        <title>Znagoria GET/POST Gateway v3</title>
         <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 24px; }}
-            textarea {{ width: 100%; height: 180px; }}
-            input, select, button {{ margin: 4px 0; padding: 8px; }}
-            .row {{ margin-bottom: 12px; }}
-            .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }}
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 24px; }
+            textarea { width: 100%; height: 180px; }
+            input, select, button { margin: 4px 0; padding: 8px; }
+            .row { margin-bottom: 12px; }
+            .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
         </style>
     </head>
     <body>
-        <h1>Znagoria GET Gateway v2</h1>
+        <h1>Znagoria GET/POST Gateway v3</h1>
         <div class="row"><label>Token: <input id="token" placeholder="TOKEN"></label></div>
+        <div class="row"><label>Method:
+            <select id="method"><option>GET</option><option selected>POST</option></select>
+        </label></div>
         <div class="row"><label>Key:
             <select id="key"><option>Molecule</option><option>Feedback</option></select>
         </label></div>
@@ -277,35 +328,55 @@ def home():
         <h3>Result</h3>
         <div id="out" class="mono"></div>
         <script>
-            async function go(action, force=false) {{
+            async function go(action, force=false) {
                 const token = document.getElementById('token').value;
                 const key = document.getElementById('key').value;
+                const method = document.getElementById('method').value;
                 const bodyEl = document.getElementById('body');
                 const outEl = document.getElementById('out');
                 const body = bodyEl.value;
 
-                const params = new URLSearchParams({{ token }});
-                if (action !== 'status') params.set('key', key);
-                if (action === 'push') params.set('body', body);
-                if (force) params.set('force', '1');
+                const payload = { token };
+                if (action !== 'status') payload.key = key;
+                if (action === 'push') payload.body = body;
+                if (force) payload.force = 1;
 
-                const resp = await fetch('/' + action + '?' + params.toString(), {{ cache: 'no-store' }});
+                let resp;
+                if (method === 'GET') {
+                    const params = new URLSearchParams(payload);
+                    resp = await fetch('/' + action + '?' + params.toString(), { cache: 'no-store' });
+                } else {
+                    resp = await fetch('/' + action, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        cache: 'no-store',
+                        body: JSON.stringify(payload),
+                    });
+                }
+
                 const text = await resp.text();
 
-                if (action === 'pull' || action === 'status') {{
+                if (action === 'pull' || action === 'status') {
                     outEl.textContent = text;
                     return;
-                }}
+                }
 
-                if (action === 'reset' && resp.ok) {{
+                if (action === 'reset' && resp.ok) {
                     bodyEl.value = '';
-                }}
+                }
 
-                const statusResp = await fetch('/status?token=' + encodeURIComponent(token), {{ cache: 'no-store' }});
+                const statusResp = method === 'GET'
+                    ? await fetch('/status?token=' + encodeURIComponent(token), { cache: 'no-store' })
+                    : await fetch('/status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        cache: 'no-store',
+                        body: JSON.stringify({ token }),
+                    });
                 const statusText = await statusResp.text();
 
-                outEl.textContent = `${{text}}\n\nPOST_ACTION_STATUS:\n${{statusText}}`;
-            }}
+                outEl.textContent = `${text}\n\nPOST_ACTION_STATUS:\n${statusText}`;
+            }
         </script>
     </body>
     </html>
@@ -316,7 +387,7 @@ def home():
     return resp
 
 
-@app.get("/status")
+@app.route("/status", methods=["GET", "POST"])
 def status():
     auth = require_token()
     if auth:
@@ -330,10 +401,11 @@ def status():
             "host": os.uname().nodename,
             "pid": os.getpid(),
             "storage_dir": str(STORAGE_DIR),
+            "method": request.method,
         }, no_store=True)
 
 
-@app.get("/push")
+@app.route("/push", methods=["GET", "POST"])
 def push():
     auth = require_token()
     if auth:
@@ -341,7 +413,7 @@ def push():
     key, err = require_key()
     if err:
         return err
-    body = request.args.get("body", "")
+    body = get_body()
     with locked_state() as state:
         ok, why = can_push_molecule(state) if key == "Molecule" else can_push_feedback(state)
         if not ok:
@@ -356,10 +428,11 @@ def push():
             "key": key,
             "sealed": state[key]["sealed"],
             "size": state[key]["size"],
+            "method": request.method,
         }, no_store=True)
 
 
-@app.get("/seal")
+@app.route("/seal", methods=["GET", "POST"])
 def seal():
     auth = require_token()
     if auth:
@@ -368,7 +441,6 @@ def seal():
     if err:
         return err
     with locked_state() as state:
-        # Idempotent seal: repeated GET should not break the flow.
         if state[key]["sealed"]:
             sync_channel_state(state, key)
             return response_json({
@@ -379,6 +451,7 @@ def seal():
                 "already_sealed": True,
                 "size": state[key]["size"],
                 "sha256": state[key]["sha256"],
+                "method": request.method,
             }, no_store=True)
 
         ok, why = can_seal_molecule(state) if key == "Molecule" else can_seal_feedback(state)
@@ -394,10 +467,11 @@ def seal():
             "sealed": True,
             "size": state[key]["size"],
             "sha256": state[key]["sha256"],
+            "method": request.method,
         }, no_store=True)
 
 
-@app.get("/pull")
+@app.route("/pull", methods=["GET", "POST"])
 def pull():
     auth = require_token()
     if auth:
@@ -408,7 +482,6 @@ def pull():
     with locked_state() as state:
         if not state[key]["sealed"]:
             return response_json({"ok": False, "action": "pull", "key": key, "error": f"{key} is not sealed"}, status=409, no_store=True)
-        # pull must stay read-only; no read_count increment here
         text = current_text(key)
         resp = Response(text, content_type="text/plain; charset=utf-8")
         for k, v in no_store_headers().items():
@@ -416,7 +489,7 @@ def pull():
         return resp
 
 
-@app.get("/reset")
+@app.route("/reset", methods=["GET", "POST"])
 def reset():
     auth = require_token()
     if auth:
@@ -424,7 +497,7 @@ def reset():
     key, err = require_key()
     if err:
         return err
-    force = request.args.get("force", "0") == "1"
+    force = get_force_flag()
     with locked_state() as state:
         ok, why = can_reset_molecule(state, force) if key == "Molecule" else can_reset_feedback(state, force)
         if not ok:
@@ -434,7 +507,13 @@ def reset():
             path.unlink()
         state[key] = default_channel_state()
         state[key]["updated_at"] = int(time.time())
-        return response_json({"ok": True, "action": "reset", "key": key, "forced": force}, no_store=True)
+        return response_json({
+            "ok": True,
+            "action": "reset",
+            "key": key,
+            "forced": force,
+            "method": request.method,
+        }, no_store=True)
 
 
 if __name__ == "__main__":
